@@ -86,7 +86,7 @@ def prepareUpgrade(serialInstance):
     print 'firmwareMd5:'+ firmwareMd5
     print 'firmSize:' + firmwareSize
 
-    writeStr = '\x5a\x1b\x05\x00'+firmwareMd5.decode('hex')+firmwareSize.decode('hex')+'\x00'    
+    writeStr = '\x5a\x1b\x0F\x00'+firmwareMd5.decode('hex')+firmwareSize.decode('hex')+'\x00'    
     showstr = HexShow(writeStr)
     #print showstr.split(' ')
     checksum = 0
@@ -103,7 +103,7 @@ def prepareUpgrade(serialInstance):
     #print 'write str:'+ writeStr
     n = serialInstance.write(writeStr)
     sleep(2)
-    ack = serialInstance.read(255)
+    ack = serialInstance.read(8)
     if checkAck(ack):
     	if ack[3] == '\x00':
     		if ack[4] == '\x00':
@@ -131,7 +131,7 @@ def SendFirmware(serialInstance):
 	def sendPackage(writeBytes):
 		n = serialInstance.write(writeBytes)
 		sleep(0.01)
-		ack = serialInstance.read(255)
+		ack = serialInstance.read(8)
 		if checkAck(ack):
 				return True
 		else:
@@ -153,7 +153,7 @@ def SendFirmware(serialInstance):
 				break
 			count = count + 1
 			print 'send no.%d'%count
-			writeStr = '\x5a' + ('%02x'%writeLen).decode('hex')+'\x05\x01'+strRead
+			writeStr = '\x5a' + ('%02x'%writeLen).decode('hex')+'\x0F\x01'+strRead
 			showstr = HexShow(writeStr)
 			checksum = 0
 			for num in showstr.split(' '):
@@ -184,7 +184,7 @@ def SendFirmware(serialInstance):
 		firmware.close()
 
 def upgradeFinishCheck(serialInstance):
-	writeStr = '\x5a\x07\x05\x02\x00'
+	writeStr = '\x5a\x07\x0F\x02\x00'
 	showstr = HexShow(writeStr)
 	#print showstr.split(' ')
 	checksum = 0
@@ -197,7 +197,7 @@ def upgradeFinishCheck(serialInstance):
     #print 'checksunStr:' + checksumStr[-2:]
 	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
 	n = serialInstance.write(writeStr)
-	ack = serialInstance.read(255)
+	ack = serialInstance.read(8)
 	if checkAck(ack):
 		if ack[4] == '\x00':
 			print 'upgrade succuss'
@@ -208,7 +208,7 @@ def upgradeFinishCheck(serialInstance):
 
 if __name__ == "__main__":
 
-	t = serialposix.Serial('/dev/ttyUSB0',115200,timeout=0.1)
+	t = serialposix.Serial('/dev/ttyUSB0',115200,timeout=0.5)
 
 	if( t.is_open ):
 		t.close()
