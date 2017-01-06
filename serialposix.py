@@ -34,10 +34,10 @@ import select
 import struct
 import sys
 import termios
-import time
 
 import serial
-from serial.serialutil import SerialBase, SerialException, to_bytes, portNotOpenError, writeTimeoutError
+from serial.serialutil import SerialBase, SerialException, to_bytes, \
+    portNotOpenError, writeTimeoutError, Timeout
 
 
 class PlatformSpecificBase(object):
@@ -49,6 +49,11 @@ class PlatformSpecificBase(object):
     def _set_rs485_mode(self, rs485_settings):
         raise NotImplementedError('RS485 not supported on this platform')
 
+
+# some systems support an extra flag to enable the two in POSIX unsupported
+# paritiy settings for MARK and SPACE
+CMSPAR = 0  # default, for unsupported platforms, override below
+
 # try to detect the OS so that a device can be selected...
 # this code block should supply a device() and set_special_baudrate() function
 # for the platform
@@ -56,6 +61,9 @@ plat = sys.platform.lower()
 
 if plat[:5] == 'linux':    # Linux (confirmed)  # noqa
     import array
+
+    # extra termios flags
+    CMSPAR = 0o10000000000  # Use "stick" (mark/space) parity
 
     # baudrate ioctls
     TCGETS2 = 0x802C542A
@@ -181,6 +189,21 @@ elif plat[:6] == 'darwin':   # OS X
                 buf = array.array('i', [baudrate])
                 fcntl.ioctl(self.fd, IOSSIOSPEED, buf, 1)
 
+elif plat[:3] == 'bsd' or \
+     plat[:7] == 'freebsd' or \
+     plat[:6] == 'netbsd' or \
+     plat[:7] == 'openbsd':
+
+    class ReturnBaudrate(object):
+        def __getitem__(self, key):
+            return key
+
+    class PlatformSpecific(PlatformSpecificBase):
+        # Only tested on FreeBSD:
+        # The baud rate may be passed in as
+        # a literal value.
+        BAUDRATE_CONSTANTS = ReturnBaudrate()
+
 else:
     class PlatformSpecific(PlatformSpecificBase):
         pass
@@ -219,8 +242,6 @@ TIOCM_DTR_str = struct.pack('I', TIOCM_DTR)
 
 TIOCSBRK = getattr(termios, 'TIOCSBRK', 0x5427)
 TIOCCBRK = getattr(termios, 'TIOCCBRK', 0x5428)
-
-CMSPAR = 0o10000000000  # Use "stick" (mark/space) parity
 
 
 class Serial(SerialBase, PlatformSpecific):
@@ -266,7 +287,8 @@ class Serial(SerialBase, PlatformSpecific):
             if not self._rtscts:
                 self._update_rts_state()
         except IOError as e:
-            if e.errno in (22, 25):  # ignore Invalid argument and Inappropriate ioctl
+            if e.errno in (errno.EINVAL, errno.ENOTTY):
+                # ignore Invalid argument and Inappropriate ioctl
                 pass
             else:
                 raise
@@ -349,15 +371,16 @@ class Serial(SerialBase, PlatformSpecific):
         # setup parity
         iflag &= ~(termios.INPCK | termios.ISTRIP)
         if self._parity == serial.PARITY_NONE:
-            cflag &= ~(termios.PARENB | termios.PARODD)
+            cflag &= ~(termios.PARENB | termios.PARODD | CMSPAR)
         elif self._parity == serial.PARITY_EVEN:
-            cflag &= ~(termios.PARODD)
+            cflag &= ~(termios.PARODD | CMSPAR)
             cflag |= (termios.PARENB)
         elif self._parity == serial.PARITY_ODD:
+            cflag &= ~CMSPAR
             cflag |= (termios.PARENB | termios.PARODD)
-        elif self._parity == serial.PARITY_MARK and plat[:5] == 'linux':
+        elif self._parity == serial.PARITY_MARK and CMSPAR:
             cflag |= (termios.PARENB | CMSPAR | termios.PARODD)
-        elif self._parity == serial.PARITY_SPACE and plat[:5] == 'linux':
+        elif self._parity == serial.PARITY_SPACE and CMSPAR:
             cflag |= (termios.PARENB | CMSPAR)
             cflag &= ~(termios.PARODD)
         else:
@@ -433,14 +456,6 @@ class Serial(SerialBase, PlatformSpecific):
         s = fcntl.ioctl(self.fd, TIOCINQ, TIOCM_zero_str)
         return struct.unpack('I', s)[0]
 
-    def readHexShow(self,argv):
-        result = ''
-        hLen = len(argv)
-        for i in xrange(hLen):
-            hvol = ord(argv[i])
-            hhex = '%02x'%hvol
-            result += hhex + ' '
-        print 'read Hex:',result
     # select based implementation, proved to work on many systems
     def read(self, size=1):
         """\
@@ -451,11 +466,10 @@ class Serial(SerialBase, PlatformSpecific):
         if not self.is_open:
             raise portNotOpenError
         read = bytearray()
-        timeout = self._timeout
+        timeout = Timeout(self._timeout)
         while len(read) < size:
             try:
-                start_time = time.time()
-                ready, _, _ = select.select([self.fd, self.pipe_abort_read_r], [], [], timeout)
+                ready, _, _ = select.select([self.fd, self.pipe_abort_read_r], [], [], timeout.time_left())
                 if self.pipe_abort_read_r in ready:
                     os.read(self.pipe_abort_read_r, 1000)
                     break
@@ -487,12 +501,8 @@ class Serial(SerialBase, PlatformSpecific):
                 # see also http://www.python.org/dev/peps/pep-3151/#select
                 if e[0] != errno.EAGAIN:
                     raise SerialException('read failed: {}'.format(e))
-            if timeout is not None:
-                timeout -= time.time() - start_time
-                if timeout <= 0:
-                    break
-
-        self.readHexShow(bytes(read))
+            if timeout.expired():
+                break
         return bytes(read)
 
     def cancel_read(self):
@@ -501,47 +511,33 @@ class Serial(SerialBase, PlatformSpecific):
     def cancel_write(self):
         os.write(self.pipe_abort_write_w, b"x")
 
-    def writeHexShow(self,argv):
-        result = ''
-        hLen = len(argv)
-        for i in xrange(hLen):
-            hvol = ord(argv[i])
-            hhex = '%02x'%hvol
-            result += hhex + ' '
-        print 'write Hex:',result
-
     def write(self, data):
         """Output the given byte string over the serial port."""
         if not self.is_open:
             raise portNotOpenError
-
-        self.writeHexShow(data)
         d = to_bytes(data)
         tx_len = len(d)
-        timeout = self._write_timeout
-        if timeout and timeout > 0:   # Avoid comparing None with zero
-            timeout += time.time()
+        timeout = Timeout(self._write_timeout)
         while tx_len > 0:
             try:
                 n = os.write(self.fd, d)
-                if timeout == 0:
+                if timeout.is_non_blocking:
                     # Zero timeout indicates non-blocking - simply return the
                     # number of bytes of data actually written
                     return n
-                elif timeout and timeout > 0:  # Avoid comparing None with zero
+                elif not timeout.is_infinite:
                     # when timeout is set, use select to wait for being ready
                     # with the time left as timeout
-                    timeleft = timeout - time.time()
-                    if timeleft < 0:
+                    if timeout.expired():
                         raise writeTimeoutError
-                    abort, ready, _ = select.select([self.pipe_abort_write_r], [self.fd], [], timeleft)
+                    abort, ready, _ = select.select([self.pipe_abort_write_r], [self.fd], [], timeout.time_left())
                     if abort:
                         os.read(self.pipe_abort_write_r, 1000)
                         break
                     if not ready:
                         raise writeTimeoutError
                 else:
-                    assert timeout is None
+                    assert timeout.time_left() is None
                     # wait for write operation
                     abort, ready, _ = select.select([self.pipe_abort_write_r], [self.fd], [], None)
                     if abort:
@@ -557,9 +553,8 @@ class Serial(SerialBase, PlatformSpecific):
                 if v.errno != errno.EAGAIN:
                     raise SerialException('write failed: {}'.format(v))
                 # still calculate and check timeout
-                if timeout and timeout - time.time() < 0:
+                if timeout.expired():
                     raise writeTimeoutError
-
         return len(data)
 
     def flush(self):
@@ -752,6 +747,9 @@ class VTIMESerial(Serial):
         if self._inter_byte_timeout is not None:
             vmin = 1
             vtime = int(self._inter_byte_timeout * 10)
+        elif self._timeout is None:
+            vmin = 1
+            vtime = 0
         else:
             vmin = 0
             vtime = int(self._timeout * 10)
@@ -786,3 +784,6 @@ class VTIMESerial(Serial):
                 break
             read.extend(buf)
         return bytes(read)
+
+    # hack to make hasattr return false
+    cancel_read = property()

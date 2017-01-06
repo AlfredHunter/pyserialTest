@@ -1,9 +1,9 @@
-#! /usr/bin/env python
+#!/usr/bin/env python
 # encoding: utf-8
 
 import serialposix
 import hashlib
-import os
+import os,sys
 from time import sleep
 
 filename = 'PowerBoard.bin'
@@ -86,7 +86,7 @@ def prepareUpgrade(serialInstance):
     print 'firmwareMd5:'+ firmwareMd5
     print 'firmSize:' + firmwareSize
 
-    writeStr = '\x5a\x1b\x0F\x00'+firmwareMd5.decode('hex')+firmwareSize.decode('hex')+'\x00'    
+    writeStr = '\x5a\x1a\x0F\x00'+firmwareMd5.decode('hex')+firmwareSize.decode('hex')    
     showstr = HexShow(writeStr)
     #print showstr.split(' ')
     checksum = 0
@@ -101,9 +101,13 @@ def prepareUpgrade(serialInstance):
     #print hex(checksum).decode('hex')
     #showstr = HexShow(writeStr)
     #print 'write str:'+ writeStr
-    n = serialInstance.write(writeStr)
-    sleep(2)
-    ack = serialInstance.read(8)
+    n = serialInstance.write(writeStr) 
+    ack = 0
+    timeout_count = 0
+    while not ack and timeout_count < 10:
+    	ack = serialInstance.read(7)
+    	sleep(0.5)
+	timeout_count = timeout_count + 1
     if checkAck(ack):
     	if ack[3] == '\x00':
     		if ack[4] == '\x00':
@@ -130,13 +134,15 @@ def SendFirmware(serialInstance):
 	#retryCount = 0
 	def sendPackage(writeBytes):
 		n = serialInstance.write(writeBytes)
-		sleep(0.01)
-		ack = serialInstance.read(8)
+		sleep(0.1)
+		ack = serialInstance.read(7)
 		if checkAck(ack):
-				return True
+			return True
 		else:
+			#code = raw_input('ack err,go on?(Y/N)')
+			#if code == 'N' or code == 'n':
+			#	sys.exit()
 			sendPackage(writeBytes)
-			#retryCount = retryCount + 1
 			print 'check ack error,and retry '#%d'%retryCount
 			#if retryCount >= 5:
 				#print 'retry too much time'
@@ -152,7 +158,7 @@ def SendFirmware(serialInstance):
 			if not strRead:
 				break
 			count = count + 1
-			print 'send no.%d'%count
+			print 'send no.%d,write data length = %d(Bytes)'%(count,writeLen-6)
 			writeStr = '\x5a' + ('%02x'%writeLen).decode('hex')+'\x0F\x01'+strRead
 			showstr = HexShow(writeStr)
 			checksum = 0
@@ -167,7 +173,7 @@ def SendFirmware(serialInstance):
 			if not sendPackage(writeStr):
 				print 'mcu not response'
 			#n = serialInstance.write(writeStr)
-			#sleep(0.5)
+			#sleep(0.01)
 			#ack = serialInstance.read(255)
 			#if checkAck(ack):
 			#	print 'check ack ok'
@@ -197,7 +203,8 @@ def upgradeFinishCheck(serialInstance):
     #print 'checksunStr:' + checksumStr[-2:]
 	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
 	n = serialInstance.write(writeStr)
-	ack = serialInstance.read(8)
+	sleep(2)
+	ack = serialInstance.read(7)
 	if checkAck(ack):
 		if ack[4] == '\x00':
 			print 'upgrade succuss'
@@ -205,6 +212,24 @@ def upgradeFinishCheck(serialInstance):
 			print 'upgrade faild: check not ok'
 	else:
 		print 'check ack error'
+
+def readVersion(serialInstance):
+	writeStr = '\x5a\x06\x0E\x00'
+	showstr = HexShow(writeStr)
+	checksum = 0
+	for num in showstr.split(' '):
+		checksum = checksum + int(num,16)
+	checksumStr = ''+ hex(checksum)
+	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
+	n = serialInstance.write(writeStr)
+	sleep(1)
+	ack = serialInstance.read(19)
+	if checkAck(ack):
+			#print ack[5:-2]
+			print 'firmware version: ' + ack[6:-2]
+			return True
+	else:
+		print 'read version frame error'
 
 if __name__ == "__main__":
 
@@ -216,15 +241,25 @@ if __name__ == "__main__":
 	t.open()
 
 	print t.portstr
+	readVersion(t)
+	sleep(0.5)
+	readVersion(t)
+	sleep(0.5)
+	readVersion(t)
+	sleep(0.5)
+	readVersion(t)
+	sleep(0.5)
 
 	if prepareUpgrade(t):
-		confirmCODE = raw_input('confirm to update?Y/N:')
-		if confirmCODE == 'Y' or confirmCODE == 'y':
+		#confirmCODE = raw_input('confirm to update?Y/N:')
+		if 1:#confirmCODE == 'Y' or confirmCODE == 'y':
 			SendFirmware(t)
+			print 'firmware have sent finished, start to check md5'
 			upgradeFinishCheck(t)
 		elif confirmCODE == 'N' or confirmCODE == 'n':
 			print 'not to update'
 		
+	readVersion(t)
 	t.close()
 	print 'program over'
 
