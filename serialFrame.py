@@ -208,10 +208,13 @@ def upgradeFinishCheck(serialInstance):
 	if checkAck(ack):
 		if ack[4] == '\x00':
 			print 'upgrade succuss'
+			return True
 		else:
 			print 'upgrade faild: check not ok'
+			return False
 	else:
 		print 'check ack error'
+		return False
 
 def readVersion(serialInstance):
 	writeStr = '\x5a\x06\x0E\x00'
@@ -222,44 +225,68 @@ def readVersion(serialInstance):
 	checksumStr = ''+ hex(checksum)
 	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
 	n = serialInstance.write(writeStr)
-	sleep(1)
+	sleep(0.5)
 	ack = serialInstance.read(19)
 	if checkAck(ack):
-			#print ack[5:-2]
 			print 'firmware version: ' + ack[6:-2]
 			return True
 	else:
 		print 'read version frame error'
+		return False
 
+def resetMCU(serialInstance):
+	writeStr = '\x5a\x05\xff'
+	showstr = HexShow(writeStr)
+	checksum = 0
+	for num in showstr.split(' '):
+		checksum = checksum + int(num,16)
+	checksumStr = ''+ hex(checksum)
+	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
+	n = serialInstance.write(writeStr)
+	sleep(0.05)
+	ack = serialInstance.read(5)
+	if checkAck(ack):
+			print 'have reset MCU'
+			return True
+	else:
+		return False
+	 
 if __name__ == "__main__":
-
-	t = serialposix.Serial('/dev/ttyUSB0',115200,timeout=0.5)
+	testUpdateTime = 100
+	t = serialposix.Serial('/dev/ttyUSB1',115200,timeout=0.5)
 
 	if( t.is_open ):
 		t.close()
 
 	t.open()
-
 	print t.portstr
-	readVersion(t)
-	sleep(0.5)
-	readVersion(t)
-	sleep(0.5)
-	readVersion(t)
-	sleep(0.5)
-	readVersion(t)
-	sleep(0.5)
 
-	if prepareUpgrade(t):
-		#confirmCODE = raw_input('confirm to update?Y/N:')
-		if 1:#confirmCODE == 'Y' or confirmCODE == 'y':
-			SendFirmware(t)
-			print 'firmware have sent finished, start to check md5'
-			upgradeFinishCheck(t)
-		elif confirmCODE == 'N' or confirmCODE == 'n':
-			print 'not to update'
-		
 	readVersion(t)
+	sleep(0.5)
+	readVersion(t)
+#	sleep(0.5)
+#	if readVersion(t):
+#		if prepareUpgrade(t):
+#			SendFirmware(t)
+#			print 'firmware have sent finished, start to check md5'
+#			upgradeFinishCheck(t)
+#	else:
+#		print 'may disconnect'
+	haveTestTimes = 0
+	while testUpdateTime:
+		if readVersion(t):
+			if prepareUpgrade(t):
+				SendFirmware(t)
+				print 'firmware have sent finished, start to check md5'
+				if upgradeFinishCheck(t):
+					if resetMCU(t):
+						testUpdateTime = testUpdateTime - 1 
+						haveTestTimes = haveTestTimes + 1 
+						print 'have update %d times'%haveTestTimes
+		else:
+			print 'may disconnect'
+		sleep(3)
+
 	t.close()
 	print 'program over'
 

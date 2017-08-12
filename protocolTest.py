@@ -82,6 +82,17 @@ def rebootTarget(serialInstance, arg):
 	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
 	n = serialInstance.write(writeStr)
 	sleep(0.05)
+
+def resetMCU(serialInstance):
+	writeStr = '\x5a\x05\xff'
+	showstr = HexShow(writeStr)
+	checksum = 0
+	for num in showstr.split(' '):
+		checksum = checksum + int(num,16)
+	checksumStr = ''+ hex(checksum)
+	writeStr = writeStr + checksumStr[-2:].decode('hex') + '\xa5'
+	n = serialInstance.write(writeStr)
+	sleep(0.05)
 	
 def readBatSystemState(serialInstance, arg):
 	writeStr = '\x5a\x06\x02'
@@ -89,6 +100,8 @@ def readBatSystemState(serialInstance, arg):
 		writeStr = writeStr + '\x00'
 	elif arg == '1':
 		writeStr = writeStr + '\x01'
+	elif arg == '2':
+		writeStr = writeStr + '\x02'
 	else:
 		writeStr = writeStr + '\x00'
 	showstr = HexShow(writeStr)
@@ -227,6 +240,10 @@ def serialDump(serialInstance, globalIsStartCurrentsTest):
 					print colorRed + 'cmd 01 frame'+ colorEnd
 				elif content[0] == '\x02':
 					print 'cmd 02 frame'
+					if content[1] == '\x00':
+						print colorRed + 'battery voltage' + ': %d'%(struct.unpack('<H', bytes(content[4:6]))[0]) + colorEnd
+					elif content[1] == '\x02':
+						print colorRed + 'battery percentage' + ': %d'%(struct.unpack('<H', bytes(content[4:6]))[0]) + colorEnd
 				elif content[0] == '\x03':
 					print 'cmd 03 frame'
 				elif content[0] == '\x04':
@@ -254,6 +271,8 @@ def serialDump(serialInstance, globalIsStartCurrentsTest):
 					print 'cmd 06 frame'
 				elif content[0] == '\x0F':
 					print 'cmd 0F frame'
+				elif content[0] == '\xFF':
+					print 'cmd FF frame:reset MCU'
 				else:
 					print 'not known cmd'
 			else:
@@ -276,9 +295,10 @@ def serialDumpProcess(serialInstance, globalIsStartCurrentsTest):
 if __name__ == "__main__":
 	normal = 0
 	leds_effect = 0
+	read_type = 0
 	print "footer name: ", sys.argv[0]
 
-	t = serialposix.Serial('/dev/ttyUSB0',115200,timeout=0.5)
+	t = serialposix.Serial('/dev/ttyUSB1',115200,timeout=0.5)
 
 	if( t.is_open ):
 		t.close()
@@ -289,7 +309,7 @@ if __name__ == "__main__":
 	process = multiprocessing.Process( target = serialDumpProcess, args = (t, isStartCurrentsTest))
 	process.start()
 
-	opts, args = getopt.getopt(sys.argv[1:],"v:r:n:hms:ft:e")
+	opts, args = getopt.getopt(sys.argv[1:],"v:r:n:hms:ft:epo")
 	for op, value in opts:
 		if op == "-v":
 			readVersion(t, value)
@@ -307,6 +327,7 @@ if __name__ == "__main__":
 		elif op == "-s":
 			normal = 1
 			readBatSystemState(t, value)
+			read_type = value
 		elif op == "-f":
 			normal = 4
 			readFaultBitState(t)
@@ -315,6 +336,11 @@ if __name__ == "__main__":
 			startCurrentsTest(t, value)
 		elif op == "-e":
 			readNewestFaultState(t)
+		elif op == "-p":
+			normal = 1
+			readBatSystemState(t, 2)
+		elif op == "-o":
+			resetMCU(t)
 			
 	#readVersion(t)
 	#sendLedsControlFrame(t)
@@ -325,7 +351,7 @@ if __name__ == "__main__":
 			#readVersion(t)
 			#sleep(0.5)
 			if normal == 1:
-				readBatSystemState(t, '0')
+				readBatSystemState(t, read_type)
 				sleep(0.5)
 			elif normal == 2:
 				sendLedsControlFrame(t, '0')
@@ -336,9 +362,10 @@ if __name__ == "__main__":
 			elif normal == 4:
 				readFaultBitState(t)
 				sleep(0.5)
-
+		raise KeyboardInterrupt
 	except KeyboardInterrupt, e:
-		stopCurrentsTest(t)
+		if normal == 2:
+			stopCurrentsTest(t)
 		print 'exit'
 
 	process.join()
